@@ -45,7 +45,6 @@ httpcore==1.0.9
 httpx==0.28.1
 huggingface_hub==1.9.0
 idna==3.11
-ik_solver @ file:///new_space/others/ik_solver-0.3.1-cp312-cp312-linux_x86_64.whl#sha256=f58c77c27790c15d1092445f606d9473a9832da97e9b6eeda1ecca6cf4a0e74c
 ImageIO==2.37.3
 imageio-ffmpeg==0.6.0
 importlib_metadata==9.0.0
