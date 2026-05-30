@@ -53,7 +53,7 @@ import torch
 
 logger = logging.getLogger(__name__)
 
-class WanPolicy:
+class TauPolicy:
     def __init__(
         self,
         config_file,
