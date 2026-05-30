@@ -74,7 +74,7 @@ bash web_infer_scripts/run_server.sh $HOST $PORT
 
 ```
 # A simple client that send random observations
-python web_infer_utils/simple_client_wan.py
+python web_infer_utils/simple_client.py
 ```
 
 
