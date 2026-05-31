@@ -25,15 +25,16 @@ This repo is the official implementation of **$\tau_0$-World Model: A Unified Vi
 * The codes of Test-Time Computation will be further released with The pretrained weights of Simulator.
 
 
+
+
+
+## Real-World Deployment
+
 ### Setup
 
 ```
 pip install -r requirements.txt
 ```
-
-
-## Real-World Deployment
-
 
 ### Preparation
 
