@@ -5,7 +5,7 @@
 
 ![Overview](figures/VAM-teaser-img.jpg)
 
-</a> &nbsp; <a href='https://finch.agibot.com/research/tau0-wm'><img src='https://img.shields.io/badge/Project_Website-tau0_WM-blue' height='25'></a> &nbsp; <a href='https://finch-static.agibot.com/VAM/blog/tau0_wm.pdf'><img src='https://img.shields.io/badge/Paper-tau_0_WM-red' height='25'></a> &nbsp; <a href='https://huggingface.co/sii-research/tau-0-wm'><img src='https://img.shields.io/badge/Weight-huggingface-orange' height='25'></a> &nbsp;
+</a> &nbsp; <a href='https://finch.agibot.com/research/tau0-wm'><img src='https://img.shields.io/badge/Project_Website-tau0_WM-blue' height='25'></a> &nbsp; <a href='https://finch-static.agibot.com/VAM/blog/tau_0_wm.pdf'><img src='https://img.shields.io/badge/Paper-tau_0_WM-red' height='25'></a> &nbsp; <a href='https://huggingface.co/sii-research/tau-0-wm'><img src='https://img.shields.io/badge/Weight-huggingface-orange' height='25'></a> &nbsp;
 
 </div>
 
