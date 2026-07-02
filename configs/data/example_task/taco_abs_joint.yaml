@@ -1,0 +1,25 @@
+data_class: CustomLeRobotDataset
+data_class_path: data/example_dataset.py
+data:
+  data_roots: ["/path/taco_play"]
+  sample_size: [192, 256]
+  n_view: 2
+  valid_cam: ['observation.images.rgb_static', 'observation.images.rgb_gripper']
+  fps: 15
+  chunk: 9
+  action_chunk: 33
+  action_type: absolute
+  action_space: joint
+  ignore_seek: False
+  action_key: action
+  state_key: observation.state
+  return_action: True
+  norm_action: True
+  filter_action: True
+  dual_arm: False
+  state_index: [0, 1, 2, 3, 4, 5]
+  state_gripper_index: [6]
+  action_index: [0, 1, 2, 3, 4, 5]
+  action_gripper_index: [6]
+
+  statistic_files: ["configs/data/stat_file/taco_play_abs.json"]

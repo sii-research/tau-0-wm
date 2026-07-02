@@ -1,0 +1,111 @@
+allow_tf32: false
+batch_size: 12
+beta1: 0.9
+beta2: 0.95
+beta3: 0.999
+caption_dropout_p: 0.06
+data:
+  public_args:
+    action_chunk: 33
+    action_space: joint
+    action_type: absolute
+    chunk: 9
+    ignore_seek: false
+  train:
+  - configs/data/example_task/taco_abs_joint.yaml
+  val:
+  - configs/data/example_task/taco_abs_joint.yaml
+dataloader_num_workers: 8
+deepspeed:
+  bf16:
+    enabled: true
+  fp16:
+    enabled: false
+  gradient_clipping: 1.0
+  zero_optimization:
+    stage: 1
+diffusion_model:
+  config:
+    action_dim: 1024
+    action_ffn_dim: 2048
+    action_in_dim: 7
+    action_max_seq_len: 60
+    action_num_heads: 16
+    cross_attn_norm: true
+    dim: 3072
+    eps: 1.0e-06
+    ffn_dim: 14336
+    freq_dim: 256
+    in_dim: 48
+    model_type: ti2v
+    num_heads: 24
+    num_layers: 30
+    out_dim: 48
+    patch_size:
+    - 1
+    - 2
+    - 2
+    qk_norm: true
+    text_dim: 4096
+    text_len: 512
+    use_ae: true
+    window_size:
+    - -1
+    - 1
+  model_path: /path/to/pretrained/model
+diffusion_model_class: WanModel
+diffusion_model_class_path: models/wan_2_2_models/transformers/model.py
+diffusion_scheduler_class: FlowUniPCMultistepScheduler
+diffusion_scheduler_class_path: models/wan_2_2_models/scheduler/fm_solvers_unipc.py
+epsilon: 1e-8
+flow_logit_mean: 0.0
+flow_logit_std: 1.0
+gradient_accumulation_steps: 1
+gradient_checkpointing: false
+load_weights: true
+logging_dir: logs
+lr: 5e-5
+lr_num_cycles: 1
+lr_power: 1.0
+lr_scheduler: constant_with_warmup
+lr_warmup_steps: 1000
+max_grad_norm: 1.0
+mixed_precision: bf16
+model_name: tau_train
+nccl_timeout: 1000
+noisy_video: false
+num_inference_step: 10
+optimizer: adamw
+optimizer_8bit: false
+optimizer_torchao: false
+output_dir: /path/to/output_dir
+pin_memory: true
+pipeline_class: WanTI2V
+pipeline_class_path: models/wan_2_2_models/pipeline/textimage2video.py
+repeat_in_batch: 1
+report_to: None
+return_action: true
+return_video: true
+scale_lr: false
+seed: 3331459158
+steps_to_log: 20
+steps_to_save: 2000
+steps_to_val: 2000
+text_encoder:
+  checkpoint_path: /path/to/Wan2.2-TI2V-5B/models_t5_umt5-xxl-enc-bf16.pth
+  text_len: 512
+  tokenizer_path: /path/to/Wan2.2-TI2V-5B/google/umt5-xxl
+textenc_class: T5EncoderModel
+textenc_class_path: models/wan_2_2_models/text_encoder/t5.py
+tracker_name: tau_trainer_action
+train_epochs: 10000
+train_mode: video+action
+train_steps: 1000000
+use_color_jitter: true
+use_deepspeed: false
+vae_class: Wan2_2_VAE_Batch
+vae_class_path: models/wan_2_2_models/vae/vae2_2.py
+vae_encoding_mode: 3dvae
+vae_path: /path/to/Wan2.2-TI2V-5B/Wan2.2_VAE.pth
+val_shuffle: true
+weight_decay: 1e-5

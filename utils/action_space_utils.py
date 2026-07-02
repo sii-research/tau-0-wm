@@ -17,9 +17,6 @@ from typing import (
     runtime_checkable,
 )
 
-
-
-
 # ---------------------------------------------------------------------------
 # Rotation 6D helper functions (used by TransformActionAbs2Delta and TransformStateAbs2Delta)
 # ---------------------------------------------------------------------------
@@ -234,7 +231,6 @@ def quaternion_to_rotation_6d(quat: torch.Tensor, quat_order: str = "xyzw") -> t
     return matrix_to_rotation_6d(R)
 
 
-@staticmethod
 def _unwrap_angles_delta(delta: torch.Tensor) -> torch.Tensor:
     return torch.remainder(delta + torch.pi, 2 * torch.pi) - torch.pi
     
@@ -431,5 +427,139 @@ def abs_eef_to_rela(action, state):
             ]
         ).long()
         delta_raw[:, rpy_indices_in_mask] = _unwrap_angles_delta(delta_raw[:, rpy_indices_in_mask])
+
+    return delta_raw
+
+
+def abs_eef_to_delta(action, state):
+    """
+    action: (T, C), absolute action chunk
+    state:  (1, C) or (C,), absolute reference state
+
+    Delta definition:
+        delta[0] = action[0] relative to state
+        delta[t] = action[t] relative to action[t - 1], for t > 0
+
+    C == 18:
+        left(xyz + rot6d) + right(xyz + rot6d)
+
+    C == 12:
+        left(xyz + rpy) + right(xyz + rpy)
+
+    return:
+        delta action: (T, C)
+    """
+    if not isinstance(action, torch.Tensor):
+        action = torch.from_numpy(action)
+
+    if not isinstance(state, torch.Tensor):
+        state = torch.from_numpy(state)
+
+    state = state.to(device=action.device, dtype=action.dtype)
+
+    if state.ndim == 1:
+        state = state.unsqueeze(0)
+
+    assert action.ndim == 2, f"action should be (T, C), got {action.shape}"
+    assert state.ndim == 2 and state.shape[0] == 1, f"state should be (1, C) or (C,), got {state.shape}"
+
+    T, D = action.shape
+    assert D in (12, 18), f"Expected D in (12, 18), got {D}"
+    assert state.shape[1] == D, f"state dim mismatch: state.shape={state.shape}, action.shape={action.shape}"
+
+    # frame-wise reference:
+    # ref[0] = state
+    # ref[t] = action[t - 1]
+    if T > 1:
+        ref_val = torch.cat([state, action[:-1]], dim=0)  # (T, D)
+    else:
+        ref_val = state                                  # (1, D)
+
+    delta_raw = torch.zeros_like(action)
+
+    if D == 18:
+        # layout:
+        # left:  xyz(0:3) + rot6d(3:9)
+        # right: xyz(9:12) + rot6d(12:18)
+
+        left_pos = [0, 1, 2]
+        right_pos = [9, 10, 11]
+        left_rot_indices = list(range(3, 9))
+        right_rot_indices = list(range(12, 18))
+
+        # reference rotation
+        R_left_ref = rotation_6d_to_matrix(ref_val[:, left_rot_indices])      # (T, 3, 3)
+        R_right_ref = rotation_6d_to_matrix(ref_val[:, right_rot_indices])    # (T, 3, 3)
+
+        # Body-frame position delta:
+        # p_delta = R_ref^T @ (p_cur - p_ref)
+        left_p_diff = (action[:, left_pos] - ref_val[:, left_pos]).unsqueeze(-1)    # (T, 3, 1)
+        right_p_diff = (action[:, right_pos] - ref_val[:, right_pos]).unsqueeze(-1)
+
+        delta_raw[:, left_pos] = (
+            R_left_ref.transpose(-1, -2) @ left_p_diff
+        ).squeeze(-1)
+        delta_raw[:, right_pos] = (
+            R_right_ref.transpose(-1, -2) @ right_p_diff
+        ).squeeze(-1)
+
+        # Rotation delta:
+        # R_delta = R_ref^T @ R_cur
+        delta_raw[:, left_rot_indices] = compute_ee6d_delta(
+            action[:, left_rot_indices],
+            ref_val[:, left_rot_indices],
+        )
+        delta_raw[:, right_rot_indices] = compute_ee6d_delta(
+            action[:, right_rot_indices],
+            ref_val[:, right_rot_indices],
+        )
+
+    else:
+        # layout:
+        # left:  xyz(0:3) + rpy(3:6)
+        # right: xyz(6:9) + rpy(9:12)
+
+        left_pos = [0, 1, 2]
+        right_pos = [6, 7, 8]
+        left_rpy = [3, 4, 5]
+        right_rpy = [9, 10, 11]
+
+        # reference rotation
+        R_left_ref = euler_xyz_to_matrix(ref_val[:, left_rpy])      # (T, 3, 3)
+        R_right_ref = euler_xyz_to_matrix(ref_val[:, right_rpy])    # (T, 3, 3)
+
+        # Body-frame position delta:
+        # p_delta = R_ref^T @ (p_cur - p_ref)
+        left_p_diff = (action[:, left_pos] - ref_val[:, left_pos]).unsqueeze(-1)    # (T, 3, 1)
+        right_p_diff = (action[:, right_pos] - ref_val[:, right_pos]).unsqueeze(-1)
+
+        delta_raw[:, left_pos] = (
+            R_left_ref.transpose(-1, -2) @ left_p_diff
+        ).squeeze(-1)
+        delta_raw[:, right_pos] = (
+            R_right_ref.transpose(-1, -2) @ right_p_diff
+        ).squeeze(-1)
+
+        # Rotation delta:
+        # R_delta = R_ref^T @ R_cur
+        R_left_action = euler_xyz_to_matrix(action[:, left_rpy])    # (T, 3, 3)
+        R_right_action = euler_xyz_to_matrix(action[:, right_rpy])  # (T, 3, 3)
+
+        R_left_delta = R_left_ref.transpose(-1, -2) @ R_left_action
+        R_right_delta = R_right_ref.transpose(-1, -2) @ R_right_action
+
+        delta_raw[:, left_rpy] = matrix_to_euler_xyz(R_left_delta)
+        delta_raw[:, right_rpy] = matrix_to_euler_xyz(R_right_delta)
+
+        # Unwrap RPY delta angles
+        rpy_indices_in_mask = torch.cat(
+            [
+                torch.arange(3, 6, device=action.device),
+                torch.arange(9, 12, device=action.device),
+            ]
+        ).long()
+        delta_raw[:, rpy_indices_in_mask] = _unwrap_angles_delta(
+            delta_raw[:, rpy_indices_in_mask]
+        )
 
     return delta_raw
