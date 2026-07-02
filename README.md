@@ -13,12 +13,13 @@ This repo is the official implementation of **$\tau_0$-World Model: A Unified Vi
 
 
 ## News
+- [2026.06.26] 🚀 We release the post-training training and inference code for $\tau_0$-World Model.
 - [2026.05.31] 🚀 We release $\tau_0$-World Model [Paper](https://finch-static.agibot.com/VAM/blog/tau_0_wm.pdf), [Project Website](https://finch.agibot.com/research/tau0-wm), [Huggingface](https://huggingface.co/sii-research/tau-0-wm).
 
 
 ## Pretrained Model
 
-* The pretrained weights of VAM can be found on [huggingface]([https://huggingface.co/](https://huggingface.co/sii-research/tau-0-wm)).
+* The pretrained weights of VAM can be found on [Hugging Face](https://huggingface.co/sii-research/tau-0-wm).
 
 * The pretrained weights of Simulator will be released soon.
 
@@ -42,7 +43,7 @@ pip install -r requirements.txt
 
 2. Download the weight of [Wan2.2-TI2V-5B](https://huggingface.co/Wan-AI/Wan2.2-TI2V-5B).
 
-3. Replace `diffusion_model.model_path` in `configs/deployment/wan_pretrain_rela_eef6d.yaml` with your local path to $\tau_0$-WM's weight.
+3. Replace `diffusion_model.model_path` in `configs/deployment/tau_pretrain_rela_eef6d.yaml` with your local path to $\tau_0$-WM's weight.
 
 4. Replace `vae_path` in the config with your local path to VAE's weight.
 
@@ -68,8 +69,35 @@ In the pretraining stage, $\tau_0$-WM is optimized to predict the relative pose 
 
 
 
+## Post-Training
+
+The repo also ships the post-training pipeline used to adapt $\tau_0$-WM to a downstream manipulation task. The entry point is `main.py`, driven by a YAML config that names the trainer, model classes, and dataset.
+
+### Data Format
+
+Each downstream task needs three pieces:
+
+1. **A LeRobot-format dataset.** A LeRobot dataset directory is expected (>= 0.4.0 is recommended; legacy 0.3.x is also supported). For one example task, the data can be downloaded from [taco_play](https://huggingface.co/datasets/lerobot/taco_play).
+
+2. **A data YAML under `configs/data/<task>/`.** This YAML defines the dataset class, dataset roots, statistics file, and action/state layout. Use `configs/data/example_task/taco_abs_joint.yaml` as a sample. See [`data/README.md`](data/README.md) for the dataset contract and how to implement your own dataset.
+
+3. **A training YAML under `configs/tau_model/`.** This YAML references the data YAML and model/training settings. Use `configs/tau_model/posttrain_taco_play_abs.yaml` as a sample.
+
+### Launching training
+
+```
+bash scripts/train.sh main.py \
+    configs/tau_model/posttrain_taco_play_abs.yaml \
+    runner/posttrain.py
+```
+
+Before launching, edit `configs/tau_model/posttrain_taco_play_abs.yaml` and fill in the local paths for:
+
+- `output_dir`, `diffusion_model.model_path`, `text_encoder.checkpoint_path`, `text_encoder.tokenizer_path` and `vae_path`
+- the dataset root referenced by `configs/data/example_task/taco_abs_joint.yaml`
+
 ### Running
-We provide a simple script of deploying $\tau_0$-WM server:
+We provide two inference examples:
 
 ```
 # Policy Server
@@ -79,12 +107,32 @@ bash run_infer_server.sh $HOST $PORT
 python web_infer_utils/simple_client.py
 ```
 
+For one downstream post-training example based on `taco_play`, use:
+
+```
+# Posttrain Policy Server
+bash scripts/run_posttrain_infer.sh $HOST $PORT
+
+# Posttrain client
+bash scripts/run_posttrain_client.sh
+```
+
+The pretrain example keeps using `configs/deployment/tau_pretrain_rela_eef6d.yaml`.
+The posttrain example uses `configs/deployment/tau_posttrain_taco_play_abs.yaml`.
+
+For both examples, fill in these parameters in the YAML before launching:
+
+- `diffusion_model.model_path`,`vae_path`,`text_encoder.checkpoint_path` and `text_encoder.tokenizer_path`
+- `statistics_file`: mean/std JSON matching the action/state layout
+- `action_space` and `action_type`: must match the dataset/task contract
+
+
 ## Acknowledgment
 - The video model of $\tau_0$-WM is built on [Wan-2.2](https://github.com/Wan-Video/Wan2.2).
 - Some codes in this repo are modified from [GE-Act](https://github.com/AgibotTech/Genie-Envisioner.git).
+- The dataset examples are adapted from [Open X-Embodiment (OXE)](https://robotics-transformer-x.github.io/).
 - The web-socket based policy server is built on [openpi](https://github.com/Physical-Intelligence/openpi).
 
 
 ### License
 Data and codes within this repo are under [Apache License 2.0](https://github.com/huggingface/diffusers/blob/main/LICENSE).
-

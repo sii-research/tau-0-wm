@@ -9,7 +9,6 @@ from typing import Union, Type
 import torchvision
 from einops import rearrange
 import torch
-import torch.distributed as dist
 
 
 class Tee:
@@ -128,6 +127,3 @@ def save_video(tensor, save_path, fps=30):
     tensor = ((tensor + 1) / 2 * 255).to(torch.uint8)
     tensor = rearrange(tensor, "c t h w -> t h w c")
     torchvision.io.write_video(save_path, tensor, fps=fps)
-
-def zero_rank_print(s):
-    if (not dist.is_initialized()) and (dist.is_initialized() and dist.get_rank() == 0): print("### " + s)

@@ -1,12 +1,8 @@
 import argparse
 import logging
 import os
-import pdb
 import sys
-import time
-from datetime import datetime
-import cv2
-from yaml import Dumper, Loader, dump, load
+from yaml import Loader, load
 
 current_file_path = os.path.abspath(__file__)
 current_dir = os.path.dirname(current_file_path)
@@ -18,17 +14,10 @@ sys.path.insert(0, root_dir)
 
 sys.path.insert(0, current_dir)
 
-import os
-import pdb
 import random
-from datetime import datetime
-
-import cv2
 import numpy as np
 import torch
 import torch.nn as nn
-import torchvision
-import torchvision.transforms as transforms
 
 from einops import rearrange
 
@@ -39,15 +28,9 @@ from utils.model_utils import load_diffusion_model, count_model_parameters
 from utils import init_logging, import_custom_class, save_video
 
 from utils.action_space_utils import rela_eef_to_abs, quaternion_to_rotation_6d
-
-
 from typing import Any, Dict, List
 
 import json
-
-import torch
-
-    
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +108,9 @@ class TauPolicy:
         
         self.context = None
         self.reset()
+        
+        # default is dual arm
+        self.is_dual_arm = getattr(self.args, "dual_arm", True)
 
 
     def prepare_models(self,):
@@ -267,7 +253,7 @@ class TauPolicy:
     def play(
         self, obs, prompt="Action", state=None,
         num_inference_steps=5, execution_step=99, shift=1.0, sample_solver='unipc',
-        gripper_states=None, video_save_folder=None, video_sampling_steps=1, joint_denoising=False,
+        video_save_folder=None, video_sampling_steps=1, joint_denoising=False,
         reset_context=True, *args, **kwargs,
     ):
         """
@@ -279,37 +265,18 @@ class TauPolicy:
             prompt: task description
             execution_step: excution step of the past play
             state:
-                shape: np.array of shape: {C};
-                action space: the pose of end effector, 2 * {xyz+quaternion(with order xyzw)}, the coordinate origin of each eef pose is the current Arm Base link.
-            gripper_states: np.array of shape: {2}
+                shape: np.array of shape: {C}, single arm or dual arm, the last dim of each arm is gripper state
 
         Output:
             action:
-                shape: np.array of shape: {T, C}
-                action space: the pose of end effector, 2 * {xyz+quaternion(with order xyzw)}, the coordinate origin of each eef pose is the current Arm Base link.
+                shape: np.array of shape: {T, C}, single arm or dual arm, the last dim of each arm is gripper state
         """
 
         if reset_context:
             self.context = None
 
+        # state preporcessing
         state = torch.tensor(state).unsqueeze(0) # C->1,C
-        gripper_states = torch.tensor(gripper_states).unsqueeze(0) # C->1,C
-
-        if self.action_space == "eef6d":
-
-            ### from eef to eef6d
-            state_rot_l_6d = quaternion_to_rotation_6d(state[:, 3:7])
-            state_rot_r_6d = quaternion_to_rotation_6d(state[:, 10:14])
-
-            state = torch.cat((
-                state[:,:3], state_rot_l_6d,
-                gripper_states[:,:gripper_states.shape[-1]//2],
-                state[:,7:10], state_rot_r_6d,
-                gripper_states[:,gripper_states.shape[-1]//2:]
-            ),dim=-1)
-
-        else:
-            raise NotImplementedError
 
         assert execution_step >= 1 and execution_step <= 100, "execution_step should be in [1, 100]"
 
@@ -389,25 +356,38 @@ class TauPolicy:
         state = state.unsqueeze(0)
 
 
-        ### for dual-arm
-        gripper_dim = self.gripper_dim
-        arm_dim = (self.action_dim - 2*self.gripper_dim)//2
-
-
         ### prediction post-processing
         if self.action_type == "absolute":
             final_actions_pred = actions_pred[:, :execution_step, :] * self.act_std + self.act_mean
         elif self.action_type == "relative":
+        
             final_actions_pred = actions_pred[:, :execution_step, :]
             final_actions_pred = final_actions_pred * self.act_std + self.act_mean
-            if self.action_space == "eef6d":
+            
+            if self.is_dual_arm:
+                ### for dual-arm
+                gripper_dim = self.gripper_dim
+                arm_dim = (self.action_dim - 2*self.gripper_dim)//2
                 action_ = torch.cat((
                     final_actions_pred[:, :, :arm_dim],
                     final_actions_pred[:, :, arm_dim+gripper_dim:2*arm_dim+gripper_dim]
                 ), dim=-1)[0]
                 state_ = torch.cat((state[:, :, :arm_dim], state[:, :, arm_dim+gripper_dim:2*arm_dim+gripper_dim]), dim=-1)[0]
+            else:
+                gripper_dim = self.gripper_dim
+                arm_dim = self.action_dim - self.gripper_dim
+                action_ = torch.cat((
+                    final_actions_pred[:, :, :arm_dim],
+                    final_actions_pred[:, :, :arm_dim]
+                ), dim=-1)[0]
+                state_ = torch.cat((state[:, :, :arm_dim], state[:, :, :arm_dim]), dim=-1)[0]
+                
+            if self.action_space == "joint":
+                abs_action = action_ + state_
+            elif "eef" in self.action_space:
                 abs_action = rela_eef_to_abs(action_, state_)
-                final_actions_pred[0, :, :arm_dim] = abs_action[:, :arm_dim]
+            final_actions_pred[0, :, :arm_dim] = abs_action[:, :arm_dim]
+            if self.is_dual_arm:
                 final_actions_pred[0, :, arm_dim+gripper_dim:2*arm_dim+gripper_dim] = abs_action[:, arm_dim:]
         else:
             raise NotImplementedError
