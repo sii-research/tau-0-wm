@@ -37,6 +37,37 @@ This repo is the official implementation of **$\tau_0$-World Model: A Unified Vi
 pip install -r requirements.txt
 ```
 
+### Device Selection
+
+The inference servers support CPU, NVIDIA CUDA, and Intel XPU (integrated and discrete GPUs) backends. Use the `--device` flag to select the target device:
+
+| `--device` | Backend | Distributed backend |
+|---|---|---|
+| `xpu` | Intel GPU (XPU) | `ccl` |
+| `cuda` | NVIDIA GPU (CUDA) | `nccl` |
+| `cpu` | CPU | `gloo` |
+| *(omit)* | Auto-detect (xpu > cuda > cpu) | — |
+
+**Intel XPU** — install a PyTorch build with XPU support, then launch the server with `--device xpu`:
+
+```
+python -m web_infer_utils.server \
+    --config configs/deployment/tau_pretrain_rela_eef6d.yaml \
+    --host $HOST --port $PORT \
+    --device xpu
+```
+
+**NVIDIA CUDA** — the default when CUDA is available; explicit flag shown for clarity:
+
+```
+python -m web_infer_utils.server \
+    --config configs/deployment/tau_pretrain_rela_eef6d.yaml \
+    --host $HOST --port $PORT \
+    --device cuda
+```
+
+The same `--device` flag applies to the post-training inference server (`web_infer_utils.posttrain_taco_play.server`). When the flag is omitted the best available device is selected automatically.
+
 ### Preparation
 
 1. Download the pretrained weight of $\tau_0$-World Model.

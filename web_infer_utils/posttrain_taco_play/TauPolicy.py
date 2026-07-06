@@ -38,7 +38,7 @@ class TauPolicy:
     def __init__(
         self,
         config_file,
-        device = torch.device("cuda:0"),
+        device = None,
         rank=0,
         compile_model=False,
         compile_mode="reduce-overhead",
@@ -54,7 +54,14 @@ class TauPolicy:
     ):
         cd = load(open(config_file, "r"), Loader=Loader)
         args = argparse.Namespace(**cd)
-        
+
+        if device is None:
+            if torch.xpu.is_available():
+                device = torch.device("xpu", 0)
+            elif torch.cuda.is_available():
+                device = torch.device("cuda", 0)
+            else:
+                device = torch.device("cpu")
         self.device = device
         self.rank=rank
         self.compile_model = compile_model

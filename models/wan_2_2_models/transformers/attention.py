@@ -105,7 +105,7 @@ def flash_attention(
     """
     half_dtypes = (torch.float16, torch.bfloat16)
     assert dtype in half_dtypes
-    assert q.device.type == 'cuda' and q.size(-1) <= 256
+    assert q.device.type in ('cuda', 'xpu') and q.size(-1) <= 256
 
     # params
     b, lq, lk, out_dtype = q.size(0), q.size(1), k.size(1), q.dtype
@@ -197,7 +197,7 @@ def attention(
     causal=False,
     window_size=(-1, -1),
     deterministic=False,
-    dtype=torch.bfloat16,
+    dtype=None,
     fa_version=None,
 ):
     use_sdpa = _ATTENTION_IMPL == "sdpa"
@@ -250,9 +250,11 @@ def attention(
             )
         attn_mask = None
 
-        q = q.transpose(1, 2).to(dtype)
-        k = k.transpose(1, 2).to(dtype)
-        v = v.transpose(1, 2).to(dtype)
+        # Use input tensor dtype if no explicit dtype given (preserves float32 on non-CUDA devices)
+        effective_dtype = dtype if dtype is not None else q.dtype
+        q = q.transpose(1, 2).to(effective_dtype)
+        k = k.transpose(1, 2).to(effective_dtype)
+        v = v.transpose(1, 2).to(effective_dtype)
 
         if q_scale is not None:
             q = q * q_scale
