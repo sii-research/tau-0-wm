@@ -221,7 +221,8 @@ class Trainer:
         self.args.ddp_kwargs = ddp_config
         ddp_kwargs = DistributedDataParallelKwargs(**ddp_config)
         init_process_group_kwargs = InitProcessGroupKwargs(
-            backend="nccl", timeout=timedelta(seconds=self.args.nccl_timeout)
+            backend="ccl" if torch.xpu.is_available() else "nccl",
+            timeout=timedelta(seconds=self.args.nccl_timeout)
         )
         mixed_precision = "no" if torch.backends.mps.is_available() else self.args.mixed_precision
         report_to = None if self.args.report_to.lower() == "none" else self.args.report_to
@@ -495,7 +496,7 @@ class Trainer:
             self.diffusion_model.enable_gradient_checkpointing()
 
         # Enable TF32 for faster training on Ampere GPUs: https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices
-        if self.args.allow_tf32 and torch.cuda.is_available():
+        if self.args.allow_tf32 and torch.cuda.is_available() and not torch.xpu.is_available():
             torch.backends.cuda.matmul.allow_tf32 = True
 
 
@@ -1016,7 +1017,7 @@ class Trainer:
             cap = 'Validation'
             fps = int(int(getattr(self.args, "basic_fps", 30)) / ((action_chunk-1)/(chunk-1)))
 
-            device_id = str(accelerator.device).lower().replace("cuda:", "")
+            device_id = str(accelerator.device).lower().replace("cuda:", "").replace("xpu:", "")
 
             save_video(rearrange(video.data.cpu(), 'c v t h w -> c t h (v w)', v=n_view), os.path.join(model_save_dir, f'{cap}_gt_{device_id}.mp4'), fps=fps)
 

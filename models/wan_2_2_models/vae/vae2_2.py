@@ -2,7 +2,6 @@
 import logging
 
 import torch
-import torch.cuda.amp as amp
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
@@ -10,6 +9,24 @@ from einops import rearrange
 __all__ = [
     "Wan2_2_VAE",
 ]
+
+
+def _device_type(device):
+    """Return the device type string ('xpu', 'cuda', 'cpu') for autocast."""
+    if isinstance(device, torch.device):
+        return device.type
+    return str(device).split(":")[0]
+
+
+def _resolve_device(device):
+    """Auto-detect the best available device when device is None."""
+    if device is None:
+        if torch.xpu.is_available():
+            return "xpu"
+        if torch.cuda.is_available():
+            return "cuda"
+        return "cpu"
+    return device
 
 CACHE_T = 2
 
@@ -895,11 +912,11 @@ class Wan2_2_VAE:
         dim_mult=[1, 2, 4, 4],
         temperal_downsample=[False, True, True],
         dtype=torch.float,
-        device="cuda",
+        device=None,
     ):
 
         self.dtype = dtype
-        self.device = device
+        self.device = _resolve_device(device)
 
         mean = torch.tensor(
             [
@@ -1025,7 +1042,7 @@ class Wan2_2_VAE:
         try:
             if not isinstance(videos, list):
                 raise TypeError("videos should be a list")
-            with amp.autocast(dtype=self.dtype):
+            with torch.amp.autocast(_device_type(self.device), dtype=self.dtype):
                 return [
                     self.model.encode(u.unsqueeze(0),
                                       self.scale).float().squeeze(0)
@@ -1039,7 +1056,7 @@ class Wan2_2_VAE:
         try:
             if not isinstance(zs, list):
                 raise TypeError("zs should be a list")
-            with amp.autocast(dtype=self.dtype):
+            with torch.amp.autocast(_device_type(self.device), dtype=self.dtype):
                 return [
                     self.model.decode(u.unsqueeze(0),
                                       self.scale).float().clamp_(-1,
@@ -1061,11 +1078,11 @@ class Wan2_2_VAE_Batch:
         dim_mult=[1, 2, 4, 4],
         temperal_downsample=[False, True, True],
         dtype=torch.float,
-        device="cuda",
+        device=None,
     ):
 
         self.dtype = dtype
-        self.device = device
+        self.device = _resolve_device(device)
 
         mean = torch.tensor(
             [
@@ -1189,7 +1206,7 @@ class Wan2_2_VAE_Batch:
 
     def encode(self, videos, chunk=1):
         try:
-            with amp.autocast(dtype=self.dtype):
+            with torch.amp.autocast(_device_type(self.device), dtype=self.dtype):
                 if chunk is None or chunk <= 1:
                     return [
                         self.model.encode(u.unsqueeze(0), self.scale).float().squeeze(0)
@@ -1214,7 +1231,7 @@ class Wan2_2_VAE_Batch:
         try:
             if not isinstance(zs, list):
                 raise TypeError("zs should be a list")
-            with amp.autocast(dtype=self.dtype):
+            with torch.amp.autocast(_device_type(self.device), dtype=self.dtype):
                 return [
                     self.model.decode(u.unsqueeze(0),
                                       self.scale).float().clamp_(-1,

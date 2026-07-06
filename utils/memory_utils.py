@@ -15,7 +15,14 @@ def get_memory_statistics(precision: int = 3) -> Dict[str, Any]:
     max_memory_allocated = None
     max_memory_reserved = None
 
-    if torch.cuda.is_available():
+    if torch.xpu.is_available():
+        device = torch.xpu.current_device()
+        memory_allocated = torch.xpu.memory_allocated(device)
+        memory_reserved = torch.xpu.memory_reserved(device)
+        max_memory_allocated = torch.xpu.max_memory_allocated(device)
+        max_memory_reserved = torch.xpu.max_memory_reserved(device)
+
+    elif torch.cuda.is_available():
         device = torch.cuda.current_device()
         memory_allocated = torch.cuda.memory_allocated(device)
         memory_reserved = torch.cuda.memory_reserved(device)
@@ -26,7 +33,7 @@ def get_memory_statistics(precision: int = 3) -> Dict[str, Any]:
         memory_allocated = torch.mps.current_allocated_memory()
 
     else:
-        logger.warning("No CUDA, MPS, or ROCm device found. Memory statistics are not available.")
+        logger.warning("No XPU, CUDA, MPS, or ROCm device found. Memory statistics are not available.")
 
     return {
         "memory_allocated": round(bytes_to_gigabytes(memory_allocated), ndigits=precision),
@@ -42,7 +49,10 @@ def bytes_to_gigabytes(x: int) -> float:
 
 
 def free_memory() -> None:
-    if torch.cuda.is_available():
+    if torch.xpu.is_available():
+        gc.collect()
+        torch.xpu.empty_cache()
+    elif torch.cuda.is_available():
         gc.collect()
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
