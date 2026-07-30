@@ -13,7 +13,9 @@ This repo is the official implementation of **$\tau_0$-World Model: A Unified Vi
 
 
 ## News
-- [2026.06.26] 🚀 We release the post-training training and inference code for $\tau_0$-World Model.
+- [2026.07.30] 🚀 We release the inference code for test-time computation.
+- [2026.07.30] 🚀 We release the post-training and inference code for Video Simulator, and the pretrained [weights](https://huggingface.co/sii-research/tau-0-wm/tree/main/simulator) of Simulator.
+- [2026.06.26] 🚀 We release the post-training and inference code for $\tau_0$-World Model.
 - [2026.05.31] 🚀 We release $\tau_0$-World Model [Paper](https://finch-static.agibot.com/VAM/blog/tau_0_wm.pdf), [Project Website](https://finch.agibot.com/research/tau0-wm), [Huggingface](https://huggingface.co/sii-research/tau-0-wm).
 
 
@@ -21,9 +23,8 @@ This repo is the official implementation of **$\tau_0$-World Model: A Unified Vi
 
 * The pretrained weights of VAM can be found on [Hugging Face](https://huggingface.co/sii-research/tau-0-wm).
 
-* The pretrained weights of Simulator will be released soon.
+* The pretrained weights of Simulator can be found on [Hugging Face](https://huggingface.co/sii-research/tau-0-wm/tree/main/simulator).
 
-* The codes of Test-Time Computation will be further released with The pretrained weights of Simulator.
 
 
 
@@ -69,7 +70,7 @@ In the pretraining stage, $\tau_0$-WM is optimized to predict the relative pose 
 
 
 
-## Post-Training
+## Post-Training of Video Action Model
 
 The repo also ships the post-training pipeline used to adapt $\tau_0$-WM to a downstream manipulation task. The entry point is `main.py`, driven by a YAML config that names the trainer, model classes, and dataset.
 
@@ -127,6 +128,33 @@ For both examples, fill in these parameters in the YAML before launching:
 - `action_space` and `action_type`: must match the dataset/task contract
 
 
+
+## Post-Training of Action-Conditioned Video Simulator
+
+We release the pre-trained weights of our Action-Conditioned Video Simulator and provide a simple example of training the simulator on your custom dataset.
+
+### Training
+1. Download the pre-trained weights
+2. Prepare your custom dataset and reorganize it into a structure consistent with the VAM post-training tutorial.
+3. Modify related path in `configs/tau_model/posttrain_sim_taco_play_abs.yaml`
+4. Run:
+```
+bash scripts/train.sh main.py \
+    configs/tau_model/posttrain_sim_taco_play_abs.yaml \
+    runner/posttrain_sim.py
+```
+
+### Deploying Your Simulator Server
+```
+# server
+bash scripts/run_posttrain_sim_infer.sh
+
+# client example
+bash scripts/run_posttrain_sim_client.sh
+```
+
+
+
 ## Acknowledgment
 - The video model of $\tau_0$-WM is built on [Wan-2.2](https://github.com/Wan-Video/Wan2.2).
 - Some codes in this repo are modified from [GE-Act](https://github.com/AgibotTech/Genie-Envisioner.git).
@@ -134,5 +162,5 @@ For both examples, fill in these parameters in the YAML before launching:
 - The web-socket based policy server is built on [openpi](https://github.com/Physical-Intelligence/openpi).
 
 
-### License
+## License
 Data and codes within this repo are under [Apache License 2.0](https://github.com/huggingface/diffusers/blob/main/LICENSE).
