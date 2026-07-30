@@ -1,0 +1,569 @@
+import argparse
+import logging
+import os
+import sys
+from yaml import Loader, load
+
+current_file_path = os.path.abspath(__file__)
+current_dir = os.path.dirname(current_file_path)
+root_dir = os.path.dirname(os.path.dirname(current_dir))
+sys.path.insert(0, root_dir)
+
+root_dir = os.path.dirname(os.path.dirname(root_dir))
+sys.path.insert(0, root_dir)
+
+sys.path.insert(0, current_dir)
+
+import random
+import numpy as np
+import torch
+import torch.nn as nn
+
+from einops import rearrange
+
+from models.wan_2_2_models.transformers.attention import set_attention_backend
+
+from utils.model_utils import load_diffusion_model, count_model_parameters
+
+from utils import init_logging, import_custom_class, save_video
+
+from utils.action_space_utils import rela_eef_to_abs, quaternion_to_rotation_6d
+from typing import Any, Dict, List
+
+import json
+
+logger = logging.getLogger(__name__)
+
+
+
+DEFAULT_HEAD = np.array([0.7060, 0.3267])
+DEFAULT_WAIST = np.array([0.0, 0.43633231])
+DEFAULT_VELOCITY = np.array([0.0, 0.0])
+
+
+
+class TauPolicy:
+    def __init__(
+        self,
+        config_file,
+        device = torch.device("cuda:0"),
+        rank=0,
+        compile_model=False,
+        compile_mode="reduce-overhead",
+        compile_dynamic="auto",
+        compile_target="full",
+        enable_action_cross_attn_kv_cache=False,
+        enable_self_attn_fused_qkv=False,
+        enable_context_null_cache=False,
+        attention_impl="auto",
+        sdpa_backend="auto",
+        flash_attn_version="auto",
+        enable_action_rope_cache=False,
+    ):
+        cd = load(open(config_file, "r"), Loader=Loader)
+        args = argparse.Namespace(**cd)
+        
+        self.device = device
+        self.rank=rank
+        self.compile_model = compile_model        
+        self.compile_mode = compile_mode
+        self.compile_dynamic = compile_dynamic
+        self.compile_target = compile_target
+        self.enable_action_cross_attn_kv_cache = enable_action_cross_attn_kv_cache
+        self.enable_self_attn_fused_qkv = enable_self_attn_fused_qkv
+        self.enable_context_null_cache = enable_context_null_cache
+        self.attention_impl = attention_impl
+        self.sdpa_backend = sdpa_backend
+        self.flash_attn_version = flash_attn_version
+        self.enable_action_rope_cache = enable_action_rope_cache
+        
+        self.dtype = torch.bfloat16
+        self.action_dim = args.action_dim
+        self.gripper_dim = args.gripper_dim
+        
+        self.chunk = args.chunk
+        self.action_chunk = args.action_chunk
+        self.img_size = args.img_size
+
+        self.action_type = args.action_type
+        self.action_space = args.action_space
+        
+        self.load_weights = getattr(args, "load_weights", True)
+        if not self.load_weights:
+            print("You are not loading the pretrained weights of transformer.")
+
+        print(self.action_type, self.action_space)
+        print("Add state")
+
+        self.args = args
+        
+        self.add_mem = getattr(self.args, "add_mem", False)
+        if self.add_mem:
+            self.memory = dict({
+                "obs": [],
+            })
+        self.prepare_models()
+
+        with open(args.statistics_file, "r") as f:
+            self.StatisticInfo = json.load(f)
+
+        if hasattr(args, "sim_statistics_file"):
+            with open(args.sim_statistics_file, "r") as f:
+                self.StatisticInfo_sim = json.load(f)
+        else:
+            self.StatisticInfo_sim = self.StatisticInfo
+
+        self.norm_type = args.norm_type
+
+        if self.norm_type == "meanstd":
+            ### (1,1,C)
+            self.act_mean = torch.tensor(self.StatisticInfo["action"]["mean"]).unsqueeze(0).unsqueeze(0)
+            self.act_std = torch.tensor(self.StatisticInfo["action"]["std"]).unsqueeze(0).unsqueeze(0)+1e-6
+            ### (C, )
+            self.sta_mean = np.array(self.StatisticInfo["state"]["mean"])
+            self.sta_std = np.array(self.StatisticInfo["state"]["std"])+1e-6
+            
+            ### (1,1,C)
+            self.sim_act_mean = torch.tensor(self.StatisticInfo_sim["action"]["mean"]).unsqueeze(0).unsqueeze(0)
+            self.sim_act_std = torch.tensor(self.StatisticInfo_sim["action"]["std"]).unsqueeze(0).unsqueeze(0)+1e-6
+
+            
+        else:
+            raise NotImplementedError
+        
+        self.context = None
+        self.reset()
+        
+        # default is dual arm
+        self.is_dual_arm = getattr(self.args, "dual_arm", True)
+
+
+    def prepare_models(self,):
+
+        print("Initializing models")
+        device = self.device
+        dtype = self.dtype
+        
+        ### Load VAE
+        vae_class = import_custom_class(
+            self.args.vae_class, getattr(self.args, "vae_class_path", "transformers")
+        )
+        
+        if getattr(self.args, 'vae_path', False):
+            vae_path=self.args.vae_path
+        else:
+            vae_path=os.path.join(self.args.pretrained_model_name_or_path), getattr(self.args, "vae_checkpoint", "Wan2.2_VAE.pth")
+        self.vae = vae_class(vae_pth=vae_path, device=device, dtype=dtype)
+
+        self.SPATIAL_DOWN_RATIO = 16
+        self.TEMPORAL_DOWN_RATIO = 4
+        
+        print(f'SPATIAL_DOWN_RATIO of VAE :{self.SPATIAL_DOWN_RATIO}')
+        print(f'TEMPORAL_DOWN_RATIO of VAE :{self.TEMPORAL_DOWN_RATIO}')
+
+        ### Load Tokenizer
+        textenc_class = import_custom_class(
+            self.args.textenc_class, getattr(self.args, "textenc_class_path", "transformers")
+        )
+        self.text_encoder = textenc_class(
+            dtype=dtype,
+            device=device,
+            **self.args.text_encoder
+        )
+
+    
+        ### Load Diffusion Model
+        set_attention_backend(
+            attention_impl=self.attention_impl,
+            sdpa_backend=self.sdpa_backend,
+            flash_attn_version=self.flash_attn_version,
+        )
+        diffusion_model_class = import_custom_class(
+            self.args.diffusion_model_class, getattr(self.args, "diffusion_model_class_path", "transformers")
+        )
+        diffusion_model_config = dict(self.args.diffusion_model['config'])
+        diffusion_model_config["fused_self_attn_qkv"] = self.enable_self_attn_fused_qkv
+        diffusion_model_config["enable_action_cross_attn_kv_cache"] = self.enable_action_cross_attn_kv_cache
+        diffusion_model_config["enable_action_rope_cache"] = self.enable_action_rope_cache
+        self.diffusion_model = load_diffusion_model(
+            model_cls=diffusion_model_class,
+            model_dir=self.args.diffusion_model['model_path'],
+            load_weights=True,
+            **diffusion_model_config
+        ).to(device, dtype=dtype).eval()
+
+        if self.compile_model:
+            if not hasattr(torch, "compile"):
+                logger.warning("torch.compile is not available in this PyTorch build; skipping compilation.")
+            else:
+                try:
+                    compile_dynamic = None
+                    if self.compile_dynamic == "true":
+                        compile_dynamic = True
+                    elif self.compile_dynamic == "false":
+                        compile_dynamic = False
+
+                    compile_kwargs = dict(
+                        mode=self.compile_mode,
+                        fullgraph=False,
+                    )
+                    if compile_dynamic is not None:
+                        compile_kwargs["dynamic"] = compile_dynamic
+
+                    logger.info(
+                        "Compiling diffusion model with torch.compile(mode=%s, dynamic=%s, target=%s)",
+                        self.compile_mode,
+                        self.compile_dynamic,
+                        self.compile_target,
+                    )
+
+                    if self.compile_target in ("action_blocks", "both_blocks"):
+                        if not hasattr(self.diffusion_model, "action_blocks"):
+                            logger.warning(
+                                "compile_target=%s requested, but diffusion model has no action_blocks; skipping action_blocks compilation.",
+                                self.compile_target,
+                            )
+                        else:
+                            compiled_action_blocks = []
+                            for block in self.diffusion_model.action_blocks:
+                                compiled_action_blocks.append(
+                                    torch.compile(block, **compile_kwargs)
+                                )
+                            self.diffusion_model.action_blocks = nn.ModuleList(compiled_action_blocks)
+
+                    if self.compile_target in ("video_blocks", "both_blocks"):
+                        if not hasattr(self.diffusion_model, "blocks"):
+                            logger.warning(
+                                "compile_target=%s requested, but diffusion model has no blocks; skipping video_blocks compilation.",
+                                self.compile_target,
+                            )
+                        else:
+                            compiled_video_blocks = []
+                            for block in self.diffusion_model.blocks:
+                                compiled_video_blocks.append(
+                                    torch.compile(block, **compile_kwargs)
+                                )
+                            self.diffusion_model.blocks = nn.ModuleList(compiled_video_blocks)
+
+                    if self.compile_target in ("action_blocks", "video_blocks", "both_blocks"):
+                        pass
+                    else:
+                        self.diffusion_model = torch.compile(
+                            self.diffusion_model,
+                            **compile_kwargs,
+                        )
+                except Exception:
+                    logger.exception("torch.compile failed; continuing with the eager diffusion model.")
+
+        total_params = count_model_parameters(self.diffusion_model)
+        print(f'Total parameters for transformer model:{total_params}')
+
+
+        ### Import Inference Pipeline Class
+        self.pipeline_class = import_custom_class(
+            self.args.pipeline_class, getattr(self.args, "pipeline_class_path", "diffusers")
+        )
+        self.pipeline = self.pipeline_class(
+            self.text_encoder,
+            self.vae,
+            self.diffusion_model,
+            device_id=self.rank,
+            rank=self.rank,
+            enable_context_null_cache=self.enable_context_null_cache,
+        )
+
+
+        ### Load Simulator Model
+        sim_diffusion_model_class = import_custom_class(
+            self.args.sim_diffusion_model_class, getattr(self.args, "sim_diffusion_model_class_path", "transformers")
+        )
+        self.sim_diffusion_model = load_diffusion_model(
+            model_cls=sim_diffusion_model_class,
+            model_dir=self.args.sim_diffusion_model['model_path'],
+            load_weights=True,
+            **self.args.sim_diffusion_model['config']
+        ).to(device, dtype=dtype).eval()
+        total_params = count_model_parameters(self.sim_diffusion_model)
+        print(f'Total parameters for simulator model:{total_params}')
+
+        ### Import Simulator Pipeline Class
+        self.sim_pipeline_class = import_custom_class(
+            self.args.sim_pipeline_class, getattr(self.args, "sim_pipeline_class_path", "diffusers")
+        )
+        self.sim_pipeline = self.sim_pipeline_class(
+            self.text_encoder,
+            self.vae,
+            self.sim_diffusion_model,
+            device_id=self.rank,
+            rank=self.rank,
+        )
+
+
+
+    @torch.no_grad()
+    def play(
+        self, obs, prompt="Action", state=None,
+        num_inference_steps=5, execution_step=99, shift=1.0, sample_solver='unipc',
+        video_save_folder=None, video_sampling_steps=1, joint_denoising=False,
+        reset_context=True,
+        
+        N_proposals=1, RCS_timestep_ratios=[0.5], 
+        
+        sim_refine=False, sim_refine_ths=-0.015, sim_refine_guide_scale=1,sim_refine_sample_solver="euler",
+        sim_num_inference_steps=5, sim_refine_return_latent_timestep=3,
+        n_mem=3,
+
+        *args, **kwargs,
+    ):
+        """
+
+        Input:
+            obs: One of the followings
+                1. torch.tensor of shape: {v, 3, h, w}, ranging from -1 to 1
+                2. np.array of shape: {v, h, w, 3}, ranging from 0 to 255 (np.uin8)
+            prompt: task description
+            execution_step: excution step of the past play
+            state:
+                shape: np.array of shape: {C}, single arm or dual arm, the last dim of each arm is gripper state
+
+        Output:
+            action:
+                shape: np.array of shape: {T, C}, single arm or dual arm, the last dim of each arm is gripper state
+        """
+
+        if reset_context:
+            self.context = None
+
+        assert(not joint_denoising)
+
+        # state preporcessing
+        state = torch.tensor(state).unsqueeze(0) # C->1,C
+
+        assert execution_step >= 1 and execution_step <= 100, "execution_step should be in [1, 100]"
+
+        if obs.dtype == np.uint8:
+            ### obs / 255 * 2 - 1
+            obs = obs.astype(np.float32) / 127.5 - 1
+            obs = np.transpose(obs, (0,3,1,2))
+
+        if isinstance(obs, np.ndarray):
+            obs = torch.tensor(obs)
+
+        v, c, h, w = obs.shape
+        
+        obs = obs.unsqueeze(2).transpose(0,1)  # v,c,h,w -> c v t h w
+        mem = None
+        if sim_refine and self.add_mem:
+            self.memory["obs"].append(obs)
+            n_history = len(self.memory["obs"])
+            mem_idx = np.linspace(0, n_history-1, n_mem+1).astype(np.int16).tolist()[:-1]
+            mem = torch.cat([self.memory["obs"][_mem_idx] for _mem_idx in mem_idx], dim=2).to(self.device, dtype=self.dtype)
+
+
+        obs = obs.to(self.device, dtype=self.dtype)
+            
+        if self.norm_type == "meanstd":
+            ### C -> 1,1,C
+            sta_mean = self.sta_mean[None, :]
+            sta_std = self.sta_std[None, :]
+            normed_state = np.expand_dims((state-sta_mean)/sta_std, axis=0)
+        else:
+            raise NotImplementedError
+
+        history_action_state = torch.from_numpy(normed_state).to(self.device, dtype=self.dtype)
+        assert(len(history_action_state.shape) == 3 and history_action_state.shape[-1]==self.action_dim)
+
+        negative_prompt = ''        
+
+        if N_proposals == 1:
+            pred_all = self.pipeline.infer(
+                prompt,
+                obs,
+                self.chunk,
+                sampling_steps=num_inference_steps,
+                return_video=False,
+                return_action=True,
+                current_state=history_action_state,
+                action_chunk=self.action_chunk,
+                action_dim=self.action_dim,
+                shift=shift,
+                sample_solver=sample_solver,
+                context=self.context,
+                return_dict=True,
+            )
+            self.context = pred_all['context']
+            ### 1,t,c
+            actions_pred = pred_all['action'].detach().cpu()
+            
+        else:
+            pred_all = self.pipeline.infer(
+                prompt,
+                obs,
+                self.chunk,
+                sampling_steps=num_inference_steps,
+                return_video=False,
+                return_action=True,
+                current_state=history_action_state,
+                action_chunk=self.action_chunk,
+                action_dim=self.action_dim,
+                shift=shift,
+                sample_solver=sample_solver,
+                context=self.context,
+                return_dict=True,
+                
+                N_proposals=N_proposals,
+                get_RCS=True,
+                RCS_timestep_ratios=RCS_timestep_ratios,
+
+            )
+            self.context = pred_all['context']
+            ### shape of action_candidates: {n,t,c}
+            action_candidates = pred_all['action']
+            ### shape of rcs_pred: {n,}
+            rcs_pred = pred_all['rcs']
+            best_rcs, best_idx = rcs_pred.squeeze().max(dim=0)
+
+            if not sim_refine:
+                actions_pred = action_candidates[best_idx:best_idx+1].data.cpu()
+            else:
+                ### further refine with video simulator
+                action_candidates_sim = action_candidates.clone()
+                
+                action_candidates_sim = action_candidates_sim * self.act_std.to(action_candidates_sim.device) + self.act_mean.to(action_candidates_sim.device)
+                action_candidates_sim = (action_candidates_sim - self.sim_act_mean.to(action_candidates_sim.device)) / self.sim_act_std.to(action_candidates_sim.device)
+
+                if getattr(self.args, "whole_body", False):
+                    ### A portion of the training data includes full-body movements. To resolve the ambiguity of the action-conditioned simulator, we incorporate simple control signals for the head and waist joints and robot velocity specifically for this subset of the data. For the data not containing full‑body movements, we can simply use the DEFAULT values.
+                    head_joint_states = torch.tensor(DEFAULT_HEAD)
+                    if len(head_joint_states.shape)==1:  
+                        head_joint_states = head_joint_states.view(1,1,2).repeat(action_candidates_sim.shape[0], action_candidates_sim.shape[1], 1).to(dtype=action_candidates_sim.dtype, device=action_candidates_sim.device)
+                    waist_joint_states = torch.tensor(DEFAULT_WAIST)
+                    if len(waist_joint_states.shape)==1:  
+                        waist_joint_states = waist_joint_states.view(1,1,2).repeat(action_candidates_sim.shape[0], action_candidates_sim.shape[1], 1).to(dtype=action_candidates_sim.dtype, device=action_candidates_sim.device)
+                    robot_velocity = torch.tensor(DEFAULT_VELOCITY)
+                    if len(robot_velocity.shape)==1:  
+                        robot_velocity = robot_velocity.view(1,1,2).repeat(action_candidates_sim.shape[0], action_candidates_sim.shape[1], 1).to(dtype=action_candidates_sim.dtype, device=action_candidates_sim.device)
+                    action_candidates_sim = torch.cat((
+                        action_candidates_sim,
+                        head_joint_states,
+                        waist_joint_states,
+                        robot_velocity,
+                    ), dim=-1)
+
+                sim_preds = self.sim_pipeline.infer(
+                    prompt,
+                    obs,
+                    self.chunk,
+                    guide_scale=sim_refine_guide_scale,
+                    sampling_steps=sim_num_inference_steps,
+                    shift=1.0,
+                    return_video=True,
+                    return_reward=True,
+                    actions=action_candidates_sim.to(self.device, dtype=self.dtype),
+                    decode=False,
+                    mem_img=mem,
+                    sample_solver=sim_refine_sample_solver,
+                    return_latent_timestep=sim_refine_return_latent_timestep,
+                )
+                sim_latents, sim_rewards, sim_intermediate_latents, _ = sim_preds
+                
+                
+                sim_rewards = sim_rewards[:,:,0].data.cpu().float().numpy()
+                max_sim_rewards = sim_rewards.max(axis=1)
+                best_sim_idx = np.argmax(max_sim_rewards)
+                new_execution_step = np.argmax(sim_rewards[best_sim_idx,:])+1
+
+                
+                if max_sim_rewards[best_sim_idx] < 0:
+                    print("-----" * 10)
+                    print(f"Best sim reward ({max_sim_rewards[best_sim_idx]}) is negative. Re-predict actions.")
+                    print(f"Execution Step: {new_execution_step}" )
+
+                    
+                    ### b,c,t,h,vw
+                    new_vid_latents = sim_intermediate_latents[best_sim_idx:best_sim_idx+1].squeeze(0)
+
+                    new_pred_all = self.pipeline.infer(
+                        prompt,
+                        obs,
+                        self.chunk,
+                        sampling_steps=num_inference_steps,
+                        return_video=False,
+                        return_action=True,
+                        current_state=history_action_state,
+                        action_chunk=self.action_chunk,
+                        action_dim=self.action_dim,
+                        shift=shift,
+                        sample_solver=sample_solver,
+                        context=self.context,
+                        return_dict=True,
+                        
+                        N_proposals=N_proposals,
+                        get_RCS=True,
+                        RCS_timestep_ratios=RCS_timestep_ratios,
+                        
+                        latent=new_vid_latents,
+                        fix_video_t=sim_refine_return_latent_timestep+1,                    
+                    )
+                    ### shape of action_candidates: {n,t,c}
+                    new_action_candidates = new_pred_all['action']
+                    ### shape of rcs_pred: {n,}
+                    new_rcs_pred = new_pred_all['rcs']
+                    new_best_rcs, new_best_idx = new_rcs_pred.squeeze().max(dim=0)
+                    actions_pred = new_action_candidates[new_best_idx:new_best_idx+1].data.cpu()[:,:new_execution_step,:]
+                    
+                else:
+                    actions_pred = action_candidates[best_idx:best_idx+1, :new_execution_step].data.cpu()
+
+
+        ### original state: 1,1,C
+        state = state.unsqueeze(0)
+
+        ### prediction post-processing
+        if self.action_type == "absolute":
+            final_actions_pred = actions_pred[:, :execution_step, :] * self.act_std + self.act_mean
+            if final_actions_pred.shape[1] < execution_step:
+                final_actions_pred = torch.cat([final_actions_pred,]+[final_actions_pred[:,-1:],]*(execution_step-final_actions_pred.shape[1]), dim=1)
+                
+        elif self.action_type == "relative":
+            final_actions_pred = actions_pred[:, :execution_step, :]
+            final_actions_pred = final_actions_pred * self.act_std + self.act_mean
+            if final_actions_pred.shape[1] < execution_step:
+                final_actions_pred = torch.cat([final_actions_pred,]+[final_actions_pred[:,-1:],]*(execution_step-final_actions_pred.shape[1]), dim=1)
+            
+            if self.is_dual_arm:
+                ### for dual-arm
+                gripper_dim = self.gripper_dim
+                arm_dim = (self.action_dim - 2*self.gripper_dim)//2
+                action_ = torch.cat((
+                    final_actions_pred[:, :, :arm_dim],
+                    final_actions_pred[:, :, arm_dim+gripper_dim:2*arm_dim+gripper_dim]
+                ), dim=-1)[0]
+                state_ = torch.cat((state[:, :, :arm_dim], state[:, :, arm_dim+gripper_dim:2*arm_dim+gripper_dim]), dim=-1)[0]
+            else:
+                gripper_dim = self.gripper_dim
+                arm_dim = self.action_dim - self.gripper_dim
+                action_ = torch.cat((
+                    final_actions_pred[:, :, :arm_dim],
+                    final_actions_pred[:, :, :arm_dim]
+                ), dim=-1)[0]
+                state_ = torch.cat((state[:, :, :arm_dim], state[:, :, :arm_dim]), dim=-1)[0]
+                
+            if self.action_space == "joint":
+                abs_action = action_ + state_
+            elif "eef" in self.action_space:
+                abs_action = rela_eef_to_abs(action_, state_)
+            final_actions_pred[0, :, :arm_dim] = abs_action[:, :arm_dim]
+            if self.is_dual_arm:
+                final_actions_pred[0, :, arm_dim+gripper_dim:2*arm_dim+gripper_dim] = abs_action[:, arm_dim:]
+        else:
+            raise NotImplementedError
+
+        final_actions_pred = final_actions_pred[0].data.cpu().numpy()
+
+        return final_actions_pred
+
+
+    def reset(self):
+        self.context = None
+        pass

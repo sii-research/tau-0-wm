@@ -1,0 +1,80 @@
+# infer config
+
+action_dim: 26
+gripper_dim: 1
+chunk: 9
+action_chunk: 33
+
+img_size: [192, 256]
+action_type: "relative"
+action_space: "eef6d"
+statistics_file: configs/deployment/statistics_sim.json
+
+norm_type: "meanstd"
+
+add_mem: true
+whole_body: true
+
+
+diffusion_model:
+  config:
+    act_cond_in_dim: 26
+    act_cond_patch_size: 16
+    cross_attn_norm: true
+    dim: 3072
+    eps: 1.0e-06
+    ffn_dim: 14336
+    freq_dim: 256
+    in_dim: 48
+    model_type: ti2v
+    num_heads: 24
+    num_layers: 30
+    out_dim: 48
+    patch_size:
+    - 1
+    - 2
+    - 2
+    qk_norm: true
+    reward_ffn_dim: 2048
+    reward_in_dim: 1
+    reward_max_seq_len: 60
+    reward_num_heads: 16
+    text_dim: 4096
+    text_len: 512
+    use_re: true
+    window_size:
+    - -1
+    - -1
+  model_path: /path/to/pretrained/model
+
+diffusion_model_class: WanModel
+diffusion_model_class_path: models/wan_2_2_models/transformers/model_sim.py
+diffusion_scheduler_class: FlowUniPCMultistepScheduler
+diffusion_scheduler_class_path: models/wan_2_2_models/scheduler/fm_solvers_unipc.py
+
+gripper_dim: 1
+img_size:
+- 192
+- 256
+
+load_weights: true
+
+pipeline_class: WanTI2V
+pipeline_class_path: models/wan_2_2_models/pipeline/textimage2video_sim.py
+
+return_reward: true
+return_video: true
+
+seed: 3407
+
+text_encoder:
+  checkpoint_path: /path/to/Wan2.2-TI2V-5B/models_t5_umt5-xxl-enc-bf16.pth
+  text_len: 512
+  tokenizer_path: /path/to/Wan2.2-TI2V-5B/google/umt5-xxl
+textenc_class: T5EncoderModel
+textenc_class_path: models/wan_2_2_models/text_encoder/t5.py
+
+vae_class: Wan2_2_VAE
+vae_class_path: models/wan_2_2_models/vae/vae2_2.py
+vae_encoding_mode: 3dvae
+vae_path: /path/to/Wan2.2-TI2V-5B/Wan2.2_VAE.pth
