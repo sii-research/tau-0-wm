@@ -5,7 +5,7 @@
 
 ![Overview](figures/VAM-teaser-img.jpg)
 
-</a> &nbsp; <a href='https://finch.agibot.com/research/tau0-wm'><img src='https://img.shields.io/badge/Project_Website-tau0_WM-blue' height='25'></a> &nbsp; <a href='https://finch-static.agibot.com/VAM/blog/tau_0_wm.pdf'><img src='https://img.shields.io/badge/Paper-tau_0_WM-red' height='25'></a> &nbsp; <a href='https://huggingface.co/sii-research/tau-0-wm'><img src='https://img.shields.io/badge/Weight-huggingface-orange' height='25'></a> &nbsp;
+</a> &nbsp; <a href='https://tau0-wm.github.io/'><img src='https://img.shields.io/badge/Project_Website-tau0_WM-blue' height='25'></a> &nbsp; <a href='https://arxiv.org/abs/2606.01027'><img src='https://img.shields.io/badge/Paper-tau_0_WM-red' height='25'></a> &nbsp; <a href='https://huggingface.co/sii-research/tau-0-wm'><img src='https://img.shields.io/badge/Weight-huggingface-orange' height='25'></a> &nbsp;
 
 </div>
 
@@ -16,7 +16,7 @@ This repo is the official implementation of **$\tau_0$-World Model: A Unified Vi
 - [2026.07.30] 🚀 We release the inference code for test-time computation.
 - [2026.07.30] 🚀 We release the post-training and inference code for Video Simulator, and the pretrained [weights](https://huggingface.co/sii-research/tau-0-wm/tree/main/simulator) of Simulator.
 - [2026.06.26] 🚀 We release the post-training and inference code for $\tau_0$-World Model.
-- [2026.05.31] 🚀 We release $\tau_0$-World Model [Paper](https://finch-static.agibot.com/VAM/blog/tau_0_wm.pdf), [Project Website](https://finch.agibot.com/research/tau0-wm), [Huggingface](https://huggingface.co/sii-research/tau-0-wm).
+- [2026.05.31] 🚀 We release $\tau_0$-World Model [Paper](https://arxiv.org/abs/2606.01027), [Project Website](https://tau0-wm.github.io/), [Huggingface](https://huggingface.co/sii-research/tau-0-wm).
 
 
 ## Pretrained Model
@@ -157,7 +157,7 @@ bash scripts/run_posttrain_sim_client.sh
 
 ## Acknowledgment
 - The video model of $\tau_0$-WM is built on [Wan-2.2](https://github.com/Wan-Video/Wan2.2).
-- Some codes in this repo are modified from [GE-Act](https://github.com/AgibotTech/Genie-Envisioner.git).
+- Some codes in this repo are modified from [GE-Act](https://github.com/AgibotTech/Genie-Envisioner-V1).
 - The dataset examples are adapted from [Open X-Embodiment (OXE)](https://robotics-transformer-x.github.io/).
 - The web-socket based policy server is built on [openpi](https://github.com/Physical-Intelligence/openpi).
 
