@@ -52,7 +52,6 @@ import glob
 
 # ----------------------------------------------------
 from utils.model_utils import load_diffusion_model, count_model_parameters, unwrap_model, load_checkpoints
-from utils.model_utils import forward_pass
 from utils.optimizer_utils import get_optimizer
 from utils.memory_utils import get_memory_statistics, free_memory
 
