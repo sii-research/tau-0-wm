@@ -19,7 +19,21 @@ from web_infer_utils.posttrain_taco_play.TauPolicy import TauPolicy
 logger = logging.getLogger(__name__)
 
 
-def init_distributed_and_get_device(backend: str = "nccl"):
+def init_distributed_and_get_device(backend: str = "nccl", device_type: str = None):
+    """
+    Args:
+        backend: distributed backend to use for CUDA (default 'nccl').
+        device_type: override device type ('xpu', 'cuda', 'cpu').
+                     Auto-detects the best available when None.
+    """
+    if device_type is None:
+        if torch.xpu.is_available():
+            device_type = "xpu"
+        elif torch.cuda.is_available():
+            device_type = "cuda"
+        else:
+            device_type = "cpu"
+
     is_distributed = False
     rank = 0
     local_rank = 0
@@ -30,7 +44,11 @@ def init_distributed_and_get_device(backend: str = "nccl"):
         rank = int(os.environ["RANK"])
         world_size = int(os.environ["WORLD_SIZE"])
         local_rank = int(os.environ.get("LOCAL_RANK", 0))
-        if torch.cuda.is_available():
+        if device_type == "xpu":
+            torch.xpu.set_device(local_rank)
+            device = torch.device("xpu", local_rank)
+            dist_backend = "ccl"
+        elif device_type == "cuda":
             torch.cuda.set_device(local_rank)
             device = torch.device("cuda", local_rank)
             dist_backend = backend
@@ -40,7 +58,10 @@ def init_distributed_and_get_device(backend: str = "nccl"):
         if not dist.is_initialized():
             dist.init_process_group(backend=dist_backend, init_method="env://")
     else:
-        if torch.cuda.is_available():
+        if device_type == "xpu":
+            device = torch.device("xpu", 0)
+            torch.xpu.set_device(device)
+        elif device_type == "cuda":
             device = torch.device("cuda", 0)
             torch.cuda.set_device(device)
         else:
@@ -126,13 +147,19 @@ def get_args():
     parser.add_argument("--sdpa-backend", type=str, default="auto", choices=["auto", "flash", "efficient", "math", "cudnn"])
     parser.add_argument("--flash-attn-version", type=str, default="auto", choices=["auto", "2", "3"])
     parser.add_argument("--disable-action-rope-cache", action="store_true")
+    parser.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help="Device type: 'xpu', 'cuda', or 'cpu'. Auto-detects if not specified.",
+    )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = get_args()
     policy_metadata = dict(test_meta="Tau Posttrain Policy Meta Data")
-    device, is_distributed, rank, local_rank, world_size = init_distributed_and_get_device()
+    device, is_distributed, rank, local_rank, world_size = init_distributed_and_get_device(device_type=args.device)
     actor = TauPolicyServer(
         args.host,
         args.port,

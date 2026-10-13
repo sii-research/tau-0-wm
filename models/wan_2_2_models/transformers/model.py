@@ -13,6 +13,15 @@ from models.wan_2_2_models.transformers.attention import flash_attention, attent
 __all__ = ['WanModel']
 
 
+def _device_type(tensor_or_device):
+    """Return the device type string ('xpu', 'cuda', 'cpu') for autocast."""
+    if isinstance(tensor_or_device, torch.device):
+        return tensor_or_device.type
+    if isinstance(tensor_or_device, torch.Tensor):
+        return tensor_or_device.device.type
+    return str(tensor_or_device)
+
+
 def sinusoidal_embedding_1d(dim, position):
     # preprocess
     assert dim % 2 == 0
@@ -374,7 +383,7 @@ class WanAttentionBlock(nn.Module):
             freqs(Tensor): Rope freqs, shape [1024, C / num_heads / 2]
         """
         assert e.dtype == torch.float32
-        with torch.amp.autocast('cuda', dtype=torch.float32):
+        with torch.amp.autocast(_device_type(e), dtype=torch.float32):
             e = (self.modulation.unsqueeze(0) + e).chunk(6, dim=2)
         assert e[0].dtype == torch.float32
 
@@ -382,7 +391,7 @@ class WanAttentionBlock(nn.Module):
         y = self.self_attn(
             self.norm1(x).float() * (1 + e[1].squeeze(2)) + e[0].squeeze(2),
             seq_lens, grid_sizes, freqs, precomputed_freqs=self_attn_precomputed_freqs)
-        with torch.amp.autocast('cuda', dtype=torch.float32):
+        with torch.amp.autocast(_device_type(x), dtype=torch.float32):
             x = x + y * e[2].squeeze(2)
 
         new_cross_attn_kv = None
@@ -406,7 +415,7 @@ class WanAttentionBlock(nn.Module):
 
         y = self.ffn(
             self.norm2(x).float() * (1 + e[4].squeeze(2)) + e[3].squeeze(2))
-        with torch.amp.autocast('cuda', dtype=torch.float32):
+        with torch.amp.autocast(_device_type(x), dtype=torch.float32):
             x = x + y * e[5].squeeze(2)
         if return_cross_attn_kv:
             return x, new_cross_attn_kv
@@ -437,7 +446,7 @@ class Head(nn.Module):
             e(Tensor): Shape [B, L1, C]
         """
         assert e.dtype == torch.float32
-        with torch.amp.autocast('cuda', dtype=torch.float32):
+        with torch.amp.autocast(_device_type(x), dtype=torch.float32):
             e = (self.modulation.unsqueeze(0) + e.unsqueeze(2)).chunk(2, dim=2)
             x = (
                 self.head(
@@ -656,7 +665,7 @@ class WanModel(ModelMixin, ConfigMixin):
             # time embeddings
             if t.dim() == 1:
                 t = t.expand(t.size(0), seq_len)
-            with torch.amp.autocast('cuda', dtype=torch.float32):
+            with torch.amp.autocast(_device_type(device), dtype=torch.float32):
                 bt = t.size(0)
                 t = t.flatten()
                 e = self.time_embedding(
@@ -704,7 +713,7 @@ class WanModel(ModelMixin, ConfigMixin):
                 action_timestep = torch.cat((torch.zeros_like(action_timestep[:,0:1]), action_timestep), dim=1)
             action_states = self.action_proj_in(action_states)
             action_seq_len = action_states.shape[1]
-            with torch.amp.autocast('cuda', dtype=torch.float32):
+            with torch.amp.autocast(_device_type(device), dtype=torch.float32):
                 action_bt = action_timestep.size(0)
                 action_timestep = action_timestep.flatten()
                 action_e = self.action_time_embedding(

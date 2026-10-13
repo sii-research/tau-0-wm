@@ -11,7 +11,6 @@ from contextlib import contextmanager
 from functools import partial
 
 import torch
-import torch.cuda.amp as amp
 import torch.distributed as dist
 import torchvision.transforms.functional as TF
 from PIL import Image
@@ -110,9 +109,39 @@ def masks_like_raw(tensor, zero=False, generator=None, p=0.2):
     return out1, out2
 
 
-def sync_current_cuda():
-    if torch.cuda.is_available():
+def sync_current_device(device=None):
+    if device is not None:
+        device_type = device.type if isinstance(device, torch.device) else str(device)
+    elif torch.xpu.is_available():
+        device_type = "xpu"
+    elif torch.cuda.is_available():
+        device_type = "cuda"
+    else:
+        return
+    if device_type == "xpu":
+        torch.xpu.synchronize()
+    elif device_type == "cuda":
         torch.cuda.synchronize()
+
+
+# Keep legacy alias
+def sync_current_cuda():
+    sync_current_device()
+
+
+def _empty_device_cache(device=None):
+    """Device-agnostic cache flush (XPU / CUDA)."""
+    device_type = None
+    if device is not None:
+        device_type = device.type if isinstance(device, torch.device) else str(device).split(":")[0]
+    elif torch.xpu.is_available():
+        device_type = "xpu"
+    elif torch.cuda.is_available():
+        device_type = "cuda"
+    if device_type == "xpu":
+        torch.xpu.empty_cache()
+    elif device_type == "cuda":
+        torch.cuda.empty_cache()
 
 
 class WanTI2V:
@@ -124,6 +153,7 @@ class WanTI2V:
         diffusion_model,
         device_id=0,
         rank=0,
+        device=None,
         t5_fsdp=False,
         dit_fsdp=False,
         use_sp=False,
@@ -140,6 +170,12 @@ class WanTI2V:
                 Id of target GPU device
             rank (`int`,  *optional*, defaults to 0):
                 Process rank for distributed training
+            device (`torch.device` or `str`, *optional*):
+                Explicit target device for the pipeline. When given it takes
+                precedence over `device_id` and auto-detection, so the pipeline
+                always lands on the same device as the models built by the
+                caller (e.g. the --device flag of the inference servers).
+                Auto-detects (xpu > cuda > cpu) when omitted.
             t5_fsdp (`bool`, *optional*, defaults to False):
                 Enable FSDP sharding for T5 model
             dit_fsdp (`bool`, *optional*, defaults to False):
@@ -154,7 +190,14 @@ class WanTI2V:
                 Convert DiT model parameters dtype to 'config.param_dtype'.
                 Only works without FSDP.
         """
-        self.device = torch.device(f"cuda:{device_id}")
+        if device is not None:
+            self.device = torch.device(device)
+        elif torch.xpu.is_available():
+            self.device = torch.device(f"xpu:{device_id}")
+        elif torch.cuda.is_available():
+            self.device = torch.device(f"cuda:{device_id}")
+        else:
+            self.device = torch.device("cpu")
         self.rank = rank
         self.t5_cpu = t5_cpu
         self.init_on_cpu = init_on_cpu
@@ -372,7 +415,7 @@ class WanTI2V:
 
         # evaluation mode
         with (
-                torch.amp.autocast('cuda', dtype=self.param_dtype),
+                torch.amp.autocast(self.device.type, dtype=self.param_dtype),
                 torch.no_grad(),
                 no_sync(),
         ):
@@ -430,7 +473,7 @@ class WanTI2V:
 
             if offload_model or self.init_on_cpu:
                 self.model.to(self.device)
-                torch.cuda.empty_cache()
+                _empty_device_cache(self.device)
 
             video_states_buffer = None
 
@@ -459,14 +502,14 @@ class WanTI2V:
                     noise_pred_cond = self.model(
                         latent_model_input, t=timestep, return_action=False, store_buffer=False, **arg_c)['video'][0]
                     if offload_model:
-                        torch.cuda.empty_cache()
+                        _empty_device_cache(self.device)
 
                     mark_compile_step_begin()
 
                     noise_pred_uncond = self.model(
                         latent_model_input, t=timestep, return_action=False, store_buffer=False, **arg_null)['video'][0]
                     if offload_model:
-                        torch.cuda.empty_cache()
+                        _empty_device_cache(self.device)
                     noise_pred = noise_pred_uncond + guide_scale * (
                         noise_pred_cond - noise_pred_uncond)
 
@@ -515,7 +558,7 @@ class WanTI2V:
                         **arg_c,
                     )
                     if offload_model:
-                        torch.cuda.empty_cache()
+                        _empty_device_cache(self.device)
 
                     action_states = sample_scheduler.step(
                         noise_pred['action'],
@@ -530,8 +573,8 @@ class WanTI2V:
             
             if offload_model:
                 self.model.cpu()
-                torch.cuda.synchronize()
-                torch.cuda.empty_cache()
+                sync_current_device(self.device)
+                _empty_device_cache(self.device)
 
             if return_video:
                 if self.rank == 0:
@@ -541,7 +584,7 @@ class WanTI2V:
         del sample_scheduler
         if offload_model:
             gc.collect()
-            torch.cuda.synchronize()
+            sync_current_device(self.device)
         # if dist.is_initialized():
         #     dist.barrier()
         if return_dict:
@@ -653,7 +696,7 @@ class WanTI2V:
 
         # evaluation mode
         with (
-                torch.amp.autocast('cuda', dtype=self.param_dtype),
+                torch.amp.autocast(self.device.type, dtype=self.param_dtype),
                 torch.no_grad(),
                 no_sync(),
         ):
@@ -744,7 +787,7 @@ class WanTI2V:
 
             if offload_model or self.init_on_cpu:
                 self.model.to(self.device)
-                torch.cuda.empty_cache()
+                _empty_device_cache(self.device)
 
             video_states_buffer = None
 
@@ -772,14 +815,14 @@ class WanTI2V:
                 video_out = self.model(
                     latent_model_input, t=timestep, return_action=False, store_buffer=store_buffer, **arg_c)
                 if offload_model:
-                    torch.cuda.empty_cache()
+                    _empty_device_cache(self.device)
 
                 mark_compile_step_begin()
 
                 # noise_pred_uncond = self.model(
                 #     latent_model_input, t=timestep, return_action=False, store_buffer=False, **arg_null)['video'][0]
                 # if offload_model:
-                #     torch.cuda.empty_cache()
+                #     _empty_device_cache(self.device)
                 # noise_pred = noise_pred_uncond + guide_scale * (
                 #     noise_pred_cond - noise_pred_uncond)
 
@@ -834,7 +877,7 @@ class WanTI2V:
                     **arg_c,
                 )
                 if offload_model:
-                    torch.cuda.empty_cache()
+                    _empty_device_cache(self.device)
 
                 action_states = sample_scheduler.step(
                     noise_pred['action'],
@@ -848,8 +891,8 @@ class WanTI2V:
             
             if offload_model:
                 self.model.cpu()
-                torch.cuda.synchronize()
-                torch.cuda.empty_cache()
+                sync_current_device(self.device)
+                _empty_device_cache(self.device)
 
             if self.rank == 0:
                 x0 = list(torch.cat([rearrange(x, "c t h (v w) -> v c t h w", v=V) for x in x0], dim=0).unbind(dim=0))
@@ -859,7 +902,7 @@ class WanTI2V:
         del noise, latent, x0
         if offload_model:
             gc.collect()
-            torch.cuda.synchronize()
+            sync_current_device(self.device)
         # if dist.is_initialized():
         #     dist.barrier()
         if self.rank == 0:

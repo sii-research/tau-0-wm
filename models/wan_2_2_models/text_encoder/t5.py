@@ -475,11 +475,18 @@ class T5EncoderModel:
         self,
         text_len,
         dtype=torch.bfloat16,
-        device=torch.cuda.current_device(),
+        device=None,
         checkpoint_path=None,
         tokenizer_path=None,
         shard_fn=None,
     ):
+        if device is None:
+            if torch.xpu.is_available():
+                device = torch.device("xpu", torch.xpu.current_device())
+            elif torch.cuda.is_available():
+                device = torch.device("cuda", torch.cuda.current_device())
+            else:
+                device = torch.device("cpu")
         self.text_len = text_len
         self.dtype = dtype
         self.device = device
